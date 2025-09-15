@@ -1,0 +1,107 @@
+name: MLOps (DVC & MLflow)
+
+on:
+  push:
+    paths:
+      - "templates/mlops-experiments/**"
+      - ".github/workflows/mlops.yml"
+  pull_request:
+    paths:
+      - "templates/mlops-experiments/**"
+      - ".github/workflows/mlops.yml"
+
+jobs:
+  repro:
+    name: DVC repro & MLflow smoke
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: templates/mlops-experiments
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync deps (project)
+        run: |
+          ~/.local/bin/uv sync
+
+      - name: Install MLOps tooling (dvc, mlflow)
+        run: |
+          ~/.local/bin/uv pip install --system dvc[cloud]==3.* mlflow==2.*
+
+      - name: Show versions
+        run: |
+          python -V
+          dvc version || true
+          mlflow --version || true
+
+      - name: Initialize DVC (if needed)
+        run: |
+          if [ ! -d ".dvc" ]; then
+            dvc init -q
+          fi
+
+      - name: Reproduce DVC pipeline
+        run: dvc repro -v
+
+      - name: MLflow smoke run (log params/metrics)
+        env:
+          MLFLOW_TRACKING_URI: file://${{ github.workspace }}/mlruns
+        run: |
+          ~/.local/bin/uv run python - <<'PY'
+          import mlflow
+          with mlflow.start_run(run_name="ci-smoke"):
+              mlflow.log_param("seed", 42)
+              mlflow.log_metric("accuracy", 0.123)
+          PY
+
+      - name: Upload artifacts (processed data & mlruns)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlops-artifacts
+          path: |
+            templates/mlops-experiments/data/processed
+            mlruns
+          if-no-files-found: warn
+
+  qa:
+    name: Lint / Typecheck / Tests (optional)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: templates/mlops-experiments
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync deps
+        run: ~/.local/bin/uv sync
+
+      - name: Ruff (lint)
+        run: ~/.local/bin/uv run ruff check .
+
+      - name: Mypy (typecheck)
+        run: ~/.local/bin/uv run mypy .
+
+      - name: Pytest
+        run: ~/.local/bin/uv run pytest -q

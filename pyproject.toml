@@ -1,0 +1,16 @@
+[project]
+name = "deepforge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+
+[tool.ruff]
+line-length = 88
+select = ["E","F","I","UP","B","SIM","N","ANN"]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true

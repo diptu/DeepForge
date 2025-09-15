@@ -1,0 +1,102 @@
+name: Pipeline (Prefect & Airflow)
+
+on:
+  push:
+    paths:
+      - "templates/pipelines/**"
+      - ".github/workflows/pipeline.yml"
+  pull_request:
+    paths:
+      - "templates/pipelines/**"
+      - ".github/workflows/pipeline.yml"
+
+jobs:
+  prefect:
+    name: Prefect flow import & dry-run
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/pipelines/prefect-flow
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync deps
+        run: ~/.local/bin/uv sync
+
+      - name: Install Prefect
+        run: ~/.local/bin/uv pip install --system prefect==2.*
+
+      - name: Lint (ruff) & Type (mypy) if configured
+        run: |
+          ~/.local/bin/uv run ruff check . || true
+          ~/.local/bin/uv run mypy . || true
+
+      - name: Import flow module
+        run: python -c "import flow; print('Flow imported OK')"
+
+      - name: Dry-run flow (no external resources)
+        env:
+          PREFECT_API_URL: http://localhost  # avoid cloud usage
+        run: ~/.local/bin/uv run python - <<'PY'
+        from flow import main  # expecting a main() that orchestrates tasks
+        if callable(main):
+            print("Executing flow.main() dry-run...")
+            try:
+                main(dry_run=True)
+            except TypeError:
+                # fallback if main has no dry_run flag
+                main()
+        else:
+            print("No callable main() found; import success is enough.")
+        PY
+
+  airflow:
+    name: Airflow DAG parse check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/pipelines/airflow
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Minimal Airflow install (no extras, parse only)
+        run: |
+          ~/.local/bin/uv pip install --system "apache-airflow==2.9.*" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.9.3/constraints-3.11.txt"
+
+      - name: Ensure DAG can be imported
+        env:
+          PYTHONPATH: ${{ github.workspace }}/templates/pipelines/airflow
+        run: |
+          python - <<'PY'
+          import importlib.util, sys, pathlib
+          p = pathlib.Path("dags/churn_training.py")
+          spec = importlib.util.spec_from_file_location("churn_training", p)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)  # raises if syntax/import errors
+          # Validate there is at least one DAG object
+          dags = [v for v in vars(mod).values() if getattr(v, "dag_id", None)]
+          assert dags, "No DAGs found in churn_training.py"
+          print("DAG parse OK:", [d.dag_id for d in dags])
+          PY
+
+      - name: Ruff (lint) DAGs (optional)
+        run: ~/.local/bin/uv pip install --system ruff && ruff check dags || true
